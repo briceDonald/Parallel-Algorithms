@@ -259,6 +259,16 @@ void mpi_matrix_multiply( char* processors )
     for(int i = 0; i < cols; i++)
         cout << world_rank << i << " v: " << " : "<< localResult[i] << endl;
 
+    // Do map operation in log n
+    int h = int( ceil( log(world_size) ) );
+    for( int i = 0; i < h; i++ )
+    {
+        int mid = int( ceil( world_size / pow(2, i) ) );
+        if( world_rank );
+        if( world_rank == 0 )
+            cout << i << " " << mid << endl;
+    }
+
     if( world_rank == 0 )
     {
         // Write the result
