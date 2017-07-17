@@ -215,7 +215,6 @@ void mpi_matrix_multiply( char* processors )
             chunkSize[i] = cols * chunks;
             vecMatIdx[i] = offset % vLen;
             offset += chunks;
-            cout<<vecMatIdx[i] << " <==" << endl;
         }
 
         // Scatter each process their chunks
@@ -260,13 +259,47 @@ void mpi_matrix_multiply( char* processors )
         cout << world_rank << i << " v: " << " : "<< localResult[i] << endl;
 
     // Do map operation in log n
-    int h = int( ceil( log(world_size) ) );
-    for( int i = 0; i < h; i++ )
+    int curSize = world_size;
+    int h = int( ceil( log2f(world_size) ) );
+    for( int i = 1; i <= h; i++ )
     {
-        int mid = int( ceil( world_size / pow(2, i) ) );
-        if( world_rank );
-        if( world_rank == 0 )
-            cout << i << " " << mid << endl;
+        int half = int( ceil( curSize / pow(2, i) ) );
+        // cout <<i << " " << world_rank << " " << half << " <- " << endl;
+
+        if( world_rank >= half )
+        {
+            int rankDest = world_rank - half;
+            if( rankDest >= 0 && rankDest < half )
+            {
+                // Send local results to correspondant
+                MPI_Send(localResult, cols, MPI_INT, rankDest, 0, MPI_COMM_WORLD);
+                // MPI_Barrier(MPI_COMM_WORLD);
+            }
+        }
+        else
+        {
+            int rankSrce = world_rank  + half;
+            if( rankSrce >= half && rankSrce < curSize )
+            {
+                // Receive local results from correspondant
+                int rxData[cols];
+                MPI_Recv(rxData, cols, MPI_INT, rankSrce, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+                for(int i = 0; i < cols; i++)
+                {
+                    // cout << localResult[i] << " vs " << rxData[i] << " " << localResult[i]+rxData[i] <<  endl;
+                    localResult[i] += rxData[i];
+                }
+                // MPI_Barrier(MPI_COMM_WORLD);
+
+
+            }
+        }
+
+        MPI_Barrier(MPI_COMM_WORLD);
+        curSize = half;
+
+        // if( world_rank == 0 )
+        //   cout << h << " " << i << " " << mid << endl;
     }
 
     if( world_rank == 0 )
@@ -287,7 +320,7 @@ void mpi_matrix_multiply( char* processors )
 
 int main( int argc, char **argv )
 {
-    sequential_mattrix_multiply(argv[0]);
+  //    sequential_mattrix_multiply(argv[0]);
     mpi_matrix_multiply(argv[0]);
 	return 0;
 }
