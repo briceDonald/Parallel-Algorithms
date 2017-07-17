@@ -3,84 +3,72 @@
 #include <fstream>
 #include <vector>
 #include "stdlib.h"
+#include <string.h>
 #include <math.h>
+#include <mpi.h>
+
+// USES C++ 98
 
 using namespace std;
-#define THREADS_PER_BLOCK (1 << 9)
 
-
-
-__global__ void  par_compute_min( int *d_in, int *d_out, int sz )
+int* load_matrix( const char *filename, int &rows, int &cols )
 {
-	// get thread index
-	int tid = blockIdx.x * blockDim.x + threadIdx.x;
-	int h = (int) ceil( log2(sz*1.0f) );
+    int idx = 0;
+    string value;
+    ifstream datafile;
 
-	if( tid < sz )
-	{
-		int tpMin;
-		for(int i = 1; i <= h; i++)
+    vector< vector<int> > dataMatrix;
+    int *matrix;
+
+    cout << "-> Opening file : " << filename << endl;
+
+    try
+    {
+		datafile.open( filename );
+
+		while( datafile.good() )
 		{
-			int base = (int) ceil( sz/pow(2.0f, i) );
-			if( tid < base )
-			{
-				// compute the left and right indeces
-				int L = 2 * tid;
-				int R = 2 * tid + 1;
+            getline( datafile, value, ' ' );
 
-				// Assign temp max to left child
-				tpMin = d_in[L];
+            if( idx == 0 )
+            {
+                rows = atoi( value.c_str() );
+            }
+            else if( idx == 1 )
+            {
+                cols = atoi( value.c_str() );
+                matrix = (int*) malloc( rows * cols * sizeof(int) );
+            }
+            else if( idx > 1 )
+            {
+                matrix[idx-2] = atoi( value.c_str() );
+            }
 
-				if( R < (int)ceil(sz/pow(2.0f, i-1)) )
-					tpMin = ( d_in[L] <= d_in[R] ) ? d_in[L] : d_in[R];
-				
-				__syncthreads();
-				d_in[tid] = tpMin;
-				__syncthreads();
-			}
+            idx++;
 		}
 
-		if( tid == 0 )
-			*d_out = d_in[tid];
+        if( rows * cols != idx-2 )
+            throw string("Matrix missing data: ");
+
+		datafile.close();
 	}
-}
-
-__global__ void par_compute_last_digit( int *d_in, int *d_out, int sz  )
-{
-	// get thread index
-	int tid = blockIdx.x * blockDim.x + threadIdx.x;
-
-	if( tid < sz )
+    catch(string s)
+    {
+        cout << "Error: " << s << endl;
+        throw s;
+    }
+	catch(...)
 	{
-		d_out[tid] = d_in[tid] % 10;
-	}
-}
-
-
-/*************************************** SERIAL CODE ****************************************/
-void printProperties( int device )
-{
-	struct cudaDeviceProp prop;
-	
-	if( cudaGetDeviceProperties( &prop, device ) )
-	{
-		cout << "error: Failed to get device properties." << endl;
-		return;
+		cout << "Error opening file: " << value << endl;
 	}
 
-	cout << "BRICE NGNIGHA" << endl;
-	cout << "Prob1.\n" << endl;
-	
-	cout << "Max threads per block: " << prop.maxThreadsPerBlock << endl;
-	cout << "Max Threads per dims x: " << prop.maxThreadsDim[0] << " y: "<< prop.maxThreadsDim[1] << " z: " << prop.maxThreadsDim[2] << endl;
-	cout << "Shared memory per block " << prop.sharedMemPerBlock << endl;
-	cout << "Registers per block " << prop.regsPerBlock << endl;
-	cout << "Max grid size x: " << prop.maxGridSize[0] << " y: "<< prop.maxGridSize[1] << " z: " << prop.maxGridSize[2] << endl;
+    cout <<matrix[0]<<"---"<<endl;
+    return matrix;
 }
 
-int read_csv( vector<int> &dataVec, const char *filename )
+void load_vector( vector<int> &data, const char *filename, int &len )
 {
-    int length = 0;
+    len = 0;
     string value;
     ifstream datafile;
 
@@ -92,128 +80,204 @@ int read_csv( vector<int> &dataVec, const char *filename )
 
 		while( datafile.good() )
 		{
-			getline( datafile, value, ',' );
-			dataVec.push_back(  atoi( value.c_str() ) );
-			length++;
+			getline( datafile, value, ' ');
+			data.push_back(  atoi( value.c_str() ) );
+			len++;
 		}
 
 		datafile.close();
 	}
 	catch(...)
 	{
-		cout << "Error opnening file: " << value << endl;
+		cout << "Error opnening file: " << filename << endl;
 	}
 
-    return length;
+    return;
 }
 
-int sequential_compute_min( int *A, int len )
+void sequential_mattrix_multiply( char* processors )
 {
-	if( !A || len == 0 )
-		return -1;
-	
-	int min = A[0];
-	
-	for(int i = 0; i < len; i++)
-		if(min > A[i])
-			min = A[i];
-	return min;
+    int vLen;
+    vector<int> V;
+    int rows, cols, *matrix = NULL;
+
+    load_vector(V, "vector.txt", vLen);
+    matrix = load_matrix( "matrix.txt", rows, cols );
+
+    if( vLen != rows )
+    {
+        throw "Unmaching sizes";
+    }
+
+    if( matrix == NULL || V.empty() )
+    {
+        throw "Unable to read matrix.";
+    }
+
+    int localResult[cols];
+    memset( localResult, 0, cols*sizeof(int) );
+
+
+    for(int i = 0; i < rows*cols; i++)
+    {
+        int vecIdx = (i / cols) % vLen;
+        int idx  = i % cols;
+
+        localResult[idx] += matrix[i] * V[vecIdx];
+        // cout << i << " v: " << idx << " : " << vecIdx << " : "<< matrix[i] << endl;
+    }
+
+    for(int i = 0; i < cols; i++)
+    {
+        cout << i << " SRes: " << localResult[i] << endl;
+    }
+
+    free(matrix);
 }
 
-int parallel_compute_min(int * A, int len )
+void mpi_matrix_multiply( char* processors )
 {
-	int min;
-	int *d_in, *d_out; 
-	int *h_in = A;
+    int vLen;
+    vector<int> V;
 
-	cudaMalloc( (void**) &d_in, len*sizeof(int) ); 
-	cudaMalloc( (void**) &d_out, sizeof(int) );
-	
-	cudaMemcpy( d_in, h_in, len*sizeof(int), cudaMemcpyHostToDevice);
+    int rows, cols, *matrix = NULL;
 
-	int numBlocks = (int) ceil( (1.0f * len)/THREADS_PER_BLOCK );
-	par_compute_min<<<numBlocks, THREADS_PER_BLOCK>>>( d_in, d_out, len );
+    // Initialize the MPI environment
+    MPI_Init(NULL, NULL);
 
-	cudaMemcpy( &min, d_out, sizeof(int), cudaMemcpyDeviceToHost);
-	
-	cudaFree( d_in );
-	cudaFree( d_out );
-	return min;	
-}
+    // Find out rank, size
+    int world_rank, world_size;
+    MPI_Comm_rank(MPI_COMM_WORLD, &world_rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &world_size);
 
-void sequential_compute_last_digit( int *A, int *B, int len)
-{
-	for(int i = 0; i < len; i++)
-		B[i] = A[i] % 10;
-}
+    // We are assuming at least 2 processes for this task
+    if( world_size < 1 )
+    {
+        fprintf(stderr, "World size must be greater than 1 for %s\n", processors);
+        MPI_Abort(MPI_COMM_WORLD, 1);
+    }
 
-void parallel_compute_last_digit(int *A, int *B, int len)
-{
-	int *d_in, *d_out; 
-	int *h_in = A, *h_out = B;
+    if( world_rank == 0 )
+    {
+        // Root process reads in the necessary files
+        load_vector(V, "vector.txt", vLen);
+        matrix = load_matrix( "matrix.txt", rows, cols );
 
-	cudaMalloc( (void**) &d_in, len*sizeof(int) ); 
-	cudaMalloc( (void**) &d_out,len* sizeof(int) );
-	
-	cudaMemcpy( d_in, h_in, len*sizeof(int), cudaMemcpyHostToDevice);
+        if( vLen != rows )
+        {
+            throw "Unmaching sizes";
+        }
 
-	int numBlocks = (int) ceil( (1.0f * len)/THREADS_PER_BLOCK );
-	par_compute_last_digit<<<numBlocks, THREADS_PER_BLOCK>>>( d_in, d_out, len );
+        if( matrix == NULL || V.empty() )
+        {
+            throw "Unable to read matrix.";
+        }
+    }
 
-	cudaMemcpy( h_out, d_out, len*sizeof(int), cudaMemcpyDeviceToHost);
+    // MPI WORK
+    // Broadcast matrix size and vector
+//    MPI_Barrier(MPI_COMM_WORLD);
+    MPI_Bcast(&rows, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    MPI_Bcast(&cols, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    MPI_Bcast(&vLen, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    MPI_Barrier(MPI_COMM_WORLD);
 
-	cudaFree( d_in );
-	cudaFree( d_out );
+    int numChunks = rows / world_size;
+    int remChunks = rows % world_size;
+    if( world_rank < remChunks ) numChunks++;
+
+    int vecMat[vLen];
+    int vecIdx;
+    int rxSize = numChunks * cols;
+    int rxChunks[numChunks*cols];
+
+    if (world_rank == 0)
+    {
+        // Copy the vector matrix
+        memcpy( vecMat, &V[0], vLen*sizeof(int) );
+
+        // Compute the number of elements to send to each processes
+        int chunkSize[world_size];
+        int chunkOfst[world_size];
+        int vecMatIdx[vLen];
+        int offset = 0;
+
+        // each i here is actually representative of a world_rank
+        for(int i = 0; i < world_size; i++)
+        {
+            int chunks = rows / world_size;
+            if( i < remChunks )
+            {
+                chunks++;
+            }
+
+            chunkOfst[i] = cols * offset;
+            chunkSize[i] = cols * chunks;
+            vecMatIdx[i] = offset % vLen;
+            offset += chunks;
+            cout<<vecMatIdx[i] << " <==" << endl;
+        }
+
+        // Scatter each process their chunks
+        MPI_Scatterv(matrix, chunkSize, chunkOfst, MPI_INT, rxChunks, rxSize, MPI_INT, 0, MPI_COMM_WORLD);
+        MPI_Barrier(MPI_COMM_WORLD);
+
+        // Communicate where each node should get their value from the vector
+        MPI_Scatter(vecMatIdx, 1, MPI_INT, &vecIdx, 1, MPI_INT, 0, MPI_COMM_WORLD);
+        MPI_Barrier(MPI_COMM_WORLD);
+    }
+    else
+    {
+        // Scatter each process their chunks
+        MPI_Scatterv(matrix, NULL, NULL, MPI_INT, rxChunks, rxSize, MPI_INT, 0, MPI_COMM_WORLD);
+        MPI_Barrier(MPI_COMM_WORLD);
+
+        // Communicate where each node should get their value from the vector
+        MPI_Scatter(NULL, 1, MPI_INT, &vecIdx, 1, MPI_INT, 0, MPI_COMM_WORLD);
+        MPI_Barrier(MPI_COMM_WORLD);
+    }
+
+    MPI_Bcast(vecMat, vLen, MPI_INT, 0, MPI_COMM_WORLD);
+    MPI_Barrier(MPI_COMM_WORLD);
+
+    // Every nodes to use vecIdx, their unique index in the vector matrix vecmat
+    // to compute and reduce all their chunks to one single chunk localResult
+    int localResult[cols];
+    memset( localResult, 0, cols*sizeof(int) );
+
+    for(int i = 0; i < rxSize; i++)
+    {
+        int ofst = i / cols;
+        int idx  = i % cols;
+
+        localResult[idx] += rxChunks[i] * vecMat[(vecIdx+ofst) % vLen];
+        // cout << world_rank << " v: " << idx << " : " << vecIdx+ofst << " : "<< rxChunks[i] << endl;
+    }
+
+    MPI_Barrier(MPI_COMM_WORLD);
+
+    for(int i = 0; i < cols; i++)
+        cout << world_rank << i << " v: " << " : "<< localResult[i] << endl;
+
+    if( world_rank == 0 )
+    {
+        // Write the result
+        // for(int i = 0; i < cols; i++)
+        // {
+        //     cout << i << " v: " << " : "<< localResult[i] << endl;
+        // }
+
+        // Clean exit
+        free(matrix);
+    }
+
+    MPI_Finalize();
+    // cout << "done " << endl;
 }
 
 int main( int argc, char **argv )
 {
-	int count = 0;
-	cudaGetDeviceCount(&count);
-	
-	int devId = -1;
-	cudaGetDevice(&devId);
-	printProperties(devId);
-
-	bool err1=false, err2=false;
-	vector<int> dataVec;
-	int len = read_csv( dataVec, "inp.txt" );
-	int *A = &dataVec[0];
-
-	int parMin, seqMin;
-	parMin = parallel_compute_min( A, len );
-	seqMin = sequential_compute_min( A, len );
-
-	cout << "\nProb. 1-a -- COMPUTING THE MIN IN LOG N TIME --" << endl;
-	cout << "1-b => \t" << "Par" << "\t-vs-\t" << "Seq" << endl;   
-	if(parMin != seqMin)
-	{
-		cout <<"Error 1-a: " << "Output mismatch on array min."<<endl;
-		err1  = true;
-	}
-	else
-		cout << "1-b => \t" << parMin << "\t-vs-\t" << seqMin << endl;
-
-
-	int parB[len], seqB[len];
-	parallel_compute_last_digit( A, parB, len );
-	sequential_compute_last_digit( A, seqB, len );
-
-	cout << "\n\nProb. 1-b -- COMPUTING THE LAST DIGIT OF EACH ARRAY NUMBERS --" << endl;
-	cout << "1-b => \t" << "Par" << "\t-vs-\t" << "Seq\tVal" << endl;   
-	for(int i = 0; i < len; i ++)
-	{
-		cout << "1-b => \t" << parB[i] << "\t-vs-\t" << seqB[i] << "\t" << A[i] << endl;
-		if(parB[i] != seqB[i])
-		{
-			cout <<"Error 1-b: " << "Output mismatch on last digit."<<endl;
-			err2 = true;
-			break;
-		}
-	}
-
-	if( !err1 && !err2 )
-		cout << "\nSuccess" << endl;
-
+    sequential_mattrix_multiply(argv[0]);
+    mpi_matrix_multiply(argv[0]);
 	return 0;
 }
