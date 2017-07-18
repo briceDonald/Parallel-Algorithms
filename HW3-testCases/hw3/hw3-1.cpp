@@ -62,7 +62,6 @@ int* load_matrix( const char *filename, int &rows, int &cols )
 		cout << "Error opening file: " << value << endl;
 	}
 
-    cout <<matrix[0]<<"---"<<endl;
     return matrix;
 }
 
@@ -124,12 +123,6 @@ void sequential_mattrix_multiply( char* processors )
         int idx  = i % cols;
 
         localResult[idx] += matrix[i] * V[vecIdx];
-        // cout << i << " v: " << idx << " : " << vecIdx << " : "<< matrix[i] << endl;
-    }
-
-    for(int i = 0; i < cols; i++)
-    {
-        cout << i << " SRes: " << localResult[i] << endl;
     }
 
     free(matrix);
@@ -175,8 +168,7 @@ void mpi_matrix_multiply( char* processors )
     }
 
     // MPI WORK
-    // Broadcast matrix size and vector
-//    MPI_Barrier(MPI_COMM_WORLD);
+    // Broadcast matrix size and multiplicator vector to matrix
     MPI_Bcast(&rows, 1, MPI_INT, 0, MPI_COMM_WORLD);
     MPI_Bcast(&cols, 1, MPI_INT, 0, MPI_COMM_WORLD);
     MPI_Bcast(&vLen, 1, MPI_INT, 0, MPI_COMM_WORLD);
@@ -196,10 +188,10 @@ void mpi_matrix_multiply( char* processors )
         // Copy the vector matrix
         memcpy( vecMat, &V[0], vLen*sizeof(int) );
 
-        // Compute the number of elements to send to each processes
+        // Compute the number of elements to ''scatterv' to each processes
         int chunkSize[world_size];
         int chunkOfst[world_size];
-        int vecMatIdx[vLen];
+        int vecMatIdx[world_size];
         int offset = 0;
 
         // each i here is actually representative of a world_rank
@@ -246,25 +238,19 @@ void mpi_matrix_multiply( char* processors )
 
     for(int i = 0; i < rxSize; i++)
     {
-        int ofst = i / cols;
+        int chunkId = i / cols;
         int idx  = i % cols;
-
-        localResult[idx] += rxChunks[i] * vecMat[(vecIdx+ofst) % vLen];
-        // cout << world_rank << " v: " << idx << " : " << vecIdx+ofst << " : "<< rxChunks[i] << endl;
+        localResult[idx] += rxChunks[i] * vecMat[(vecIdx+chunkId) % vLen];
     }
 
     MPI_Barrier(MPI_COMM_WORLD);
 
-    for(int i = 0; i < cols; i++)
-        cout << world_rank << i << " v: " << " : "<< localResult[i] << endl;
-
-    // Do map operation in log n
+    // Do map operation in log n time
     int curSize = world_size;
     int h = int( ceil( log2f(world_size) ) );
     for( int i = 1; i <= h; i++ )
     {
-        int half = int( ceil( curSize / pow(2, i) ) );
-        // cout <<i << " " << world_rank << " " << half << " <- " << endl;
+        int half = int( ceil( curSize / 2.0) );
 
         if( world_rank >= half )
         {
@@ -273,7 +259,6 @@ void mpi_matrix_multiply( char* processors )
             {
                 // Send local results to correspondant
                 MPI_Send(localResult, cols, MPI_INT, rankDest, 0, MPI_COMM_WORLD);
-                // MPI_Barrier(MPI_COMM_WORLD);
             }
         }
         else
@@ -286,36 +271,30 @@ void mpi_matrix_multiply( char* processors )
                 MPI_Recv(rxData, cols, MPI_INT, rankSrce, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
                 for(int i = 0; i < cols; i++)
                 {
-                    // cout << localResult[i] << " vs " << rxData[i] << " " << localResult[i]+rxData[i] <<  endl;
                     localResult[i] += rxData[i];
                 }
-                // MPI_Barrier(MPI_COMM_WORLD);
-
-
             }
         }
 
         MPI_Barrier(MPI_COMM_WORLD);
         curSize = half;
-
-        // if( world_rank == 0 )
-        //   cout << h << " " << i << " " << mid << endl;
     }
 
     if( world_rank == 0 )
     {
         // Write the result
-        // for(int i = 0; i < cols; i++)
-        // {
-        //     cout << i << " v: " << " : "<< localResult[i] << endl;
-        // }
+        ofstream result;
 
-        // Clean exit
+        result.open("result.txt", ios_base::out);
+        for(int i = 0; i < cols; i++) result << localResult[i] << " ";
+        result << endl;
+        result.close();
+
+        // Clean up
         free(matrix);
     }
 
     MPI_Finalize();
-    // cout << "done " << endl;
 }
 
 int main( int argc, char **argv )
