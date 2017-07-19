@@ -32,7 +32,7 @@ void load_data( vector<int> &data, const char *filename, int &len )
                 {
                     data.push_back( atoi( num.c_str() ) );
                     len++;
-                    cout << num << endl;
+//                    cout << num << endl;
                 }
 
                 num = "";
@@ -51,6 +51,36 @@ void load_data( vector<int> &data, const char *filename, int &len )
     cout << len << "len" <<endl;
     return;
 }
+
+
+void sequential_quickSort( int *A, int start, int end )
+{
+    int i = start, j = end;
+    int tmp;
+    int pivot = A[ (start + end)/2 ];
+
+    // partition
+    while(i <= j)
+    {
+        while(A[i] < pivot) i++;
+        while(A[j] > pivot) j--;
+        if (i <= j)
+        {
+            tmp  = A[i];
+            A[i] = A[j];
+            A[j] = tmp;
+            i++;
+            j--;
+        }
+    };
+
+    // recursive part
+    if (start < j)
+        sequential_quickSort(A, start, j);
+    if (i < end)
+        sequential_quickSort(A, i, end);
+}
+
 
 // void sequential_quicksort( void )
 // {
@@ -229,5 +259,8 @@ int main( int argc, char **argv )
     vector<int> vec;
     int len;
     load_data(vec, "input.txt", len);
+    sequential_quickSort(&vec[0], 0, len-1);
+    for(int i = 0; i < len; i++)
+        cout << "-> " << vec[i] << endl;
     return 0;
 }

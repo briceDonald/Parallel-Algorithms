@@ -1,10 +1,12 @@
+clear; clear;
+
 echo "setting environment variables"
 LIBRARY_PATH=/usr/lib/x86_64-linux-gnu/
 C_INCLUDE_PATH=/usr/include/x86_64-linux-gnu
 CPLUS_INCLUDE_PATH=/usr/include/x86_64-linux-gnu
 UPC_FILE=upc-*.tar.gz
 echo "Installing dependencies."
-sudo apt-get install libgmp3-dev libmpfr-dev libmpc-dev libnuma-dev
+sudo apt-get install libgmp3-dev libmpfr-dev libmpc-dev libnuma-dev flex
 
 if [ ! -f $UPC_FILE ]
 then
@@ -29,10 +31,10 @@ cd build
  					--enable-shared
 
 
-make
-#if [ "$?" == "0" ]
-#then
-#	echo "Installing"
-#	# make install
-#fi
+make -j 3
+if [ "$?" == "0" ]
+then
+	echo "Installing"
+	sudo make install
+fi
 
