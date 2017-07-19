@@ -3,7 +3,6 @@
 #include <fstream>
 #include <vector>
 #include "stdlib.h"
-#include <string.h>
 #include <math.h>
 #include <mpi.h>
 
@@ -32,7 +31,6 @@ void load_data( vector<int> &data, const char *filename, int &len )
                 {
                     data.push_back( atoi( num.c_str() ) );
                     len++;
-//                    cout << num << endl;
                 }
 
                 num = "";
@@ -48,7 +46,7 @@ void load_data( vector<int> &data, const char *filename, int &len )
 	{
 		cout << "Error opening file: " << filename << endl;
 	}
-    cout << len << "len" <<endl;
+
     return;
 }
 
@@ -82,185 +80,208 @@ void sequential_quickSort( int *A, int start, int end )
 }
 
 
-// void sequential_quicksort( void )
-// {
-//     int vLen;
-//     vector<int> V;
+void mpi_hypersort( void )
+{
+    int len;
+    vector<int> data;
+    const int ROOT = 0;
 
-//     load_data(V, "input.txt", vLen);
+    // Initialize the MPI environment
+    MPI_Init(NULL, NULL);
 
-//     int localResult[cols];
-//     memset( localResult, 0, cols*sizeof(int) );
+    // Find out rank, size
+    int world_rank, world_size;
+    MPI_Comm_rank(MPI_COMM_WORLD, &world_rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &world_size);
+
+    int size;
+    int *partitionsSize;
+    int *partitionsOfst;
+
+    if( world_rank == ROOT )
+    {
+        // Root node reads in the necessary files
+        load_data(data, "input.txt", len);
+
+        int minSize = len / world_size;
+        int remElts = len % world_size;
+
+        // Partition the data
+        int offset = 0;
+        partitionsSize = (int*)malloc( world_size * sizeof(int) );
+        partitionsOfst = (int*)malloc( world_size * sizeof(int) );
+
+        // Determine the size of each partition and where each node starts
+        for(int nodeId = 0; nodeId < world_size; nodeId++)
+        {
+            int sz = minSize;
+            if( nodeId < remElts )
+            {
+                sz++;
+            }
+
+            partitionsSize[nodeId] = sz;
+            partitionsOfst[nodeId] = offset;
+            offset += sz;
+        }
+    }
+
+    // Communicate overall length
+    MPI_Bcast(&len, 1, MPI_INT, ROOT, MPI_COMM_WORLD);
+
+    // Scatter each node their partition size Node 0 is root
+    MPI_Scatter( partitionsSize, 1, MPI_INT, &size, 1, MPI_INT, ROOT, MPI_COMM_WORLD);
+    MPI_Barrier( MPI_COMM_WORLD);
+
+    // Scatter each node their chunks using scatterv: Node 0 is root
+    vector<int> partition(size);
+    MPI_Scatterv( &data[0], partitionsSize, partitionsOfst, MPI_INT, &partition[0], size, MPI_INT, ROOT, MPI_COMM_WORLD);
+    MPI_Barrier( MPI_COMM_WORLD);
+
+    // Lower and Higher halves swaps
+    const int MAX_RX_SIZE = len;
+    MPI_Comm SUB_COMM = MPI_COMM_WORLD;
+    int h = int( ceil( log2f(world_size) ) );
+
+    for( int i = 1; i <= h; i++ )
+    {
+        int subRank, subSize;
+        MPI_Comm_rank(SUB_COMM, &subRank);
+        MPI_Comm_size(SUB_COMM, &subSize);
+
+        // Now do seqential sort
+        sequential_quickSort( &partition[0], 0, size-1 );
+
+        // Compute the median
+        int median;
+        if( subRank == ROOT )
+        {
+            median = partition[( (size + 1)/2 - 1 )];
+        }
+
+        // Broadcast the median to all nodes within the comm
+        MPI_Bcast(&median, 1, MPI_INT, ROOT, SUB_COMM);
+        MPI_Barrier(SUB_COMM);
+        //        cout << "median: " << median << endl;
+
+        // Each node to separate their partition into two
+        // k, items greather than or equal to median
+        int k = 0;
+        while( partition[k] <= median ) k++;
+
+        // first half [0, k-1], second half [k, size]
+        // Get partner and swap
+        int partner;
+        MPI_Status rxStatus;
+        int half = (subSize + 1) / 2;
+        int partnerRxBuffer[MAX_RX_SIZE];
+
+        if(subRank < half )
+        {
+            // Low ranks
+            partner = subRank + half;
+
+            // Check if the destination is valid
+            if( partner < subSize )
+            {
+                // Receive low list from partner
+                MPI_Recv(partnerRxBuffer, MAX_RX_SIZE, MPI_INT, partner, 0, SUB_COMM, &rxStatus);
+
+                // Send high list to partner
+                MPI_Send(&partition[k], partition.size()-k, MPI_INT, partner, 0, SUB_COMM);
+
+                // clear space in the partition and add the new data
+                int rxCount;
+                MPI_Get_count(&rxStatus, MPI_INT, &rxCount);
+                //                cout << "Low rxCount: " << rxCount << " k " << k << endl;
+                partition.erase( partition.begin() + k, partition.end() );
+                partition.insert( partition.begin(), partnerRxBuffer, partnerRxBuffer + rxCount);
+            }
+        }
+        else
+        {
+            // High ranks
+            partner = subRank - half;
+
+            // Check if the destination is valid
+            if( partner < half )
+            {
+                // Send low list to partner
+                MPI_Send(&partition[0], k, MPI_INT, partner, 0, SUB_COMM);
+
+                // Receive high list from partner
+                MPI_Recv(partnerRxBuffer, MAX_RX_SIZE, MPI_INT, partner, 0, SUB_COMM, &rxStatus);
+
+                // clear space in the partition and add the new data
+                int rxCount;
+                MPI_Get_count(&rxStatus, MPI_INT, &rxCount);
+                //                cout << "Hgh rxCount: " << rxCount << " k " << k << endl;
+                partition.erase( partition.begin(), partition.begin() + k );
+                partition.insert( partition.begin(), partnerRxBuffer, partnerRxBuffer + rxCount);
+            }
+        }
+
+        size = partition.size();
+
+        if( subRank == ROOT )
+        {
+            // split the context
+        }
+    }
+
+    {
+        char t[30];
+        sprintf(t, "Rank: %d Size: %d\n", world_rank, size);
+        string str(t);
+
+        for(int i = 0; i < partition.size(); i++)
+        {
+            sprintf(t, "%d\t", partition[i]);
+            str += string(t);
+        }
+
+        MPI_Barrier( MPI_COMM_WORLD);
+        cout << str << endl;
+    }
+
+    // // Get the median
+    // if( world_rank == ROOT )
+    // {
+    //     int median = partition[( (size+1)/2 - 1 )];
+
+    //     // Broadcast the median
+    //     cout << median << endl;
+    //     cout << str << endl;
+    // }
 
 
-//     for(int i = 0; i < rows*cols; i++)
-//     {
-//         int vecIdx = (i / cols) % vLen;
-//         int idx  = i % cols;
+    if( world_rank == 0 )
+    {
+        // Write the result
+        // ofstream result;
 
-//         localResult[idx] += matrix[i] * V[vecIdx];
-//     }
+        // result.open("result.txt", ios_base::out);
+        //        for(int i = 0; i < cols; i++) result << localResult[i] << " ";
+        // result << endl;
+        // result.close();
 
-//     free(matrix);
-// }
+        // Clean up
+        free(partitionsOfst);
+        free(partitionsSize);
+    }
 
-// void mpi_hypersort( void )
-// {
-//     int vLen;
-//     vector<int> V;
-
-//     // Initialize the MPI environment
-//     MPI_Init(NULL, NULL);
-
-//     // Find out rank, size
-//     int world_rank, world_size;
-//     MPI_Comm_rank(MPI_COMM_WORLD, &world_rank);
-//     MPI_Comm_size(MPI_COMM_WORLD, &world_size);
-
-//     if( world_rank == 0 )
-//     {
-//         // Root process reads in the necessary files
-//         load_data(V, "input.txt", vLen);
-//         // Partition the vector
-//     }
-
-//     // MPI WORK
-//     // Broadcast matrix size and multiplicator vector to matrix
-//     MPI_Bcast(&rows, 1, MPI_INT, 0, MPI_COMM_WORLD);
-//     MPI_Bcast(&cols, 1, MPI_INT, 0, MPI_COMM_WORLD);
-//     MPI_Bcast(&vLen, 1, MPI_INT, 0, MPI_COMM_WORLD);
-//     MPI_Barrier(MPI_COMM_WORLD);
-
-//     int numChunks = rows / world_size;
-//     int remChunks = rows % world_size;
-//     if( world_rank < remChunks ) numChunks++;
-
-//     int vecMat[vLen];
-//     int vecIdx;
-//     int rxSize = numChunks * cols;
-//     int rxChunks[numChunks*cols];
-
-//     if (world_rank == 0)
-//     {
-//         // Copy the vector matrix
-//         memcpy( vecMat, &V[0], vLen*sizeof(int) );
-
-//         // Compute the number of elements to ''scatterv' to each processes
-//         int chunkSize[world_size];
-//         int chunkOfst[world_size];
-//         int vecMatIdx[world_size];
-//         int offset = 0;
-
-//         // each i here is actually representative of a world_rank
-//         for(int i = 0; i < world_size; i++)
-//         {
-//             int chunks = rows / world_size;
-//             if( i < remChunks )
-//             {
-//                 chunks++;
-//             }
-
-//             chunkOfst[i] = cols * offset;
-//             chunkSize[i] = cols * chunks;
-//             vecMatIdx[i] = offset % vLen;
-//             offset += chunks;
-//         }
-
-//         // Scatter each process their chunks
-//         MPI_Scatterv(matrix, chunkSize, chunkOfst, MPI_INT, rxChunks, rxSize, MPI_INT, 0, MPI_COMM_WORLD);
-//         MPI_Barrier(MPI_COMM_WORLD);
-
-//         // Communicate where each node should get their value from the vector
-//         MPI_Scatter(vecMatIdx, 1, MPI_INT, &vecIdx, 1, MPI_INT, 0, MPI_COMM_WORLD);
-//         MPI_Barrier(MPI_COMM_WORLD);
-//     }
-//     else
-//     {
-//         // Scatter each process their chunks
-//         MPI_Scatterv(matrix, NULL, NULL, MPI_INT, rxChunks, rxSize, MPI_INT, 0, MPI_COMM_WORLD);
-//         MPI_Barrier(MPI_COMM_WORLD);
-
-//         // Communicate where each node should get their value from the vector
-//         MPI_Scatter(NULL, 1, MPI_INT, &vecIdx, 1, MPI_INT, 0, MPI_COMM_WORLD);
-//         MPI_Barrier(MPI_COMM_WORLD);
-//     }
-
-//     MPI_Bcast(vecMat, vLen, MPI_INT, 0, MPI_COMM_WORLD);
-//     MPI_Barrier(MPI_COMM_WORLD);
-
-//     // Every nodes to use vecIdx, their unique index in the vector matrix vecmat
-//     // to compute and reduce all their chunks to one single chunk localResult
-//     int localResult[cols];
-//     memset( localResult, 0, cols*sizeof(int) );
-
-//     for(int i = 0; i < rxSize; i++)
-//     {
-//         int chunkId = i / cols;
-//         int idx  = i % cols;
-//         localResult[idx] += rxChunks[i] * vecMat[(vecIdx+chunkId) % vLen];
-//     }
-
-//     MPI_Barrier(MPI_COMM_WORLD);
-
-//     // Do map operation in log n time
-//     int curSize = world_size;
-//     int h = int( ceil( log2f(world_size) ) );
-//     for( int i = 1; i <= h; i++ )
-//     {
-//         int half = int( ceil( curSize / 2.0) );
-
-//         if( world_rank >= half )
-//         {
-//             int rankDest = world_rank - half;
-//             if( rankDest >= 0 && rankDest < half )
-//             {
-//                 // Send local results to correspondant
-//                 MPI_Send(localResult, cols, MPI_INT, rankDest, 0, MPI_COMM_WORLD);
-//             }
-//         }
-//         else
-//         {
-//             int rankSrce = world_rank  + half;
-//             if( rankSrce >= half && rankSrce < curSize )
-//             {
-//                 // Receive local results from correspondant
-//                 int rxData[cols];
-//                 MPI_Recv(rxData, cols, MPI_INT, rankSrce, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-//                 for(int i = 0; i < cols; i++)
-//                 {
-//                     localResult[i] += rxData[i];
-//                 }
-//             }
-//         }
-
-//         MPI_Barrier(MPI_COMM_WORLD);
-//         curSize = half;
-//     }
-
-//     if( world_rank == 0 )
-//     {
-//         // Write the result
-//         ofstream result;
-
-//         result.open("result.txt", ios_base::out);
-//         for(int i = 0; i < cols; i++) result << localResult[i] << " ";
-//         result << endl;
-//         result.close();
-
-//         // Clean up
-//         free(matrix);
-//     }
-
-//     MPI_Finalize();
-// }
+    MPI_Finalize();
+}
 
 int main( int argc, char **argv )
 {
-    vector<int> vec;
-    int len;
-    load_data(vec, "input.txt", len);
-    sequential_quickSort(&vec[0], 0, len-1);
-    for(int i = 0; i < len; i++)
-        cout << "-> " << vec[i] << endl;
+    // vector<int> vec;
+    // int len;
+    // load_data(vec, "input.txt", len);
+    // sequential_quickSort(&vec[0], 0, len-1);
+    // for(int i = 0; i < len; i++)
+    //     cout << "-> " << vec[i] << endl;
+
+    mpi_hypersort();
     return 0;
 }
