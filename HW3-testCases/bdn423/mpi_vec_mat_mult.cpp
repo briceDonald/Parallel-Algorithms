@@ -11,121 +11,96 @@
 
 using namespace std;
 
-int* load_matrix( const char *filename, int &rows, int &cols )
+void load_matrix( vector<int> &matrix, const char *filename, int &rows, int &cols )
 {
-    int idx = 0;
-    string value;
-    ifstream datafile;
-
-    vector< vector<int> > dataMatrix;
-    int *matrix;
-
-    cout << "-> Opening file : " << filename << endl;
-
+    cout << "Opening file : " << filename << endl;
     try
     {
-		datafile.open( filename );
+        char c;
+        string num;
+        int idx = 0;
+        ifstream datafile;
+
+        datafile.open( filename );
 
 		while( datafile.good() )
 		{
-            getline( datafile, value, ' ' );
+            c  = datafile.get();
 
-            if( idx == 0 )
+            if( c == ' ' || c == '\t' || c == '\r' || c == '\n' )
             {
-                rows = atoi( value.c_str() );
-            }
-            else if( idx == 1 )
-            {
-                cols = atoi( value.c_str() );
-                matrix = (int*) malloc( rows * cols * sizeof(int) );
-            }
-            else if( idx > 1 )
-            {
-                matrix[idx-2] = atoi( value.c_str() );
+                if( num.size() )
+                {
+                    if( idx == 0 )
+                    {
+                        rows = atoi( num.c_str() );
+                    }
+                    else if( idx == 1 )
+                    {
+                        cols = atoi( num.c_str() );
+                    }
+                    else
+                    {
+                        matrix.push_back( atoi( num.c_str() ) );
+                    }
+
+                    idx++;
+                }
+
+                num = "";
+                continue;
             }
 
-            idx++;
+            num.append(1, c);
 		}
-
-        if( rows * cols != idx-2 )
-            throw string("Matrix missing data: ");
 
 		datafile.close();
 	}
-    catch(string s)
-    {
-        cout << "Error: " << s << endl;
-        throw s;
-    }
 	catch(...)
 	{
-		cout << "Error opening file: " << value << endl;
+		cout << "Error opening file: " << filename << endl;
+        throw string( "Error opening input file.");
 	}
-
-    return matrix;
 }
 
 void load_vector( vector<int> &data, const char *filename, int &len )
 {
-    len = 0;
-    string value;
-    ifstream datafile;
-
     cout << "Opening file : " << filename << endl;
-
     try
     {
+        char c;
+        string num;
+        len = 0;
+        ifstream datafile;
+
 		datafile.open( filename );
 
-		while( datafile.good() )
+        while( datafile.good() )
 		{
-			getline( datafile, value, ' ');
-			data.push_back(  atoi( value.c_str() ) );
-			len++;
+            c  = datafile.get();
+
+            if( c == ' ' || c == '\t' || c == '\r' || c == '\n' )
+            {
+                if( num.size() )
+                {
+                    data.push_back( atoi( num.c_str() ) );
+                    len++;
+                }
+
+                num = "";
+                continue;
+            }
+
+            num.append(1, c);
 		}
 
 		datafile.close();
 	}
 	catch(...)
 	{
-		cout << "Error opnening file: " << filename << endl;
+		cout << "Error opening file: " << filename << endl;
+        throw string( "Error opening input file.");
 	}
-
-    return;
-}
-
-void sequential_mattrix_multiply( char* processors )
-{
-    int vLen;
-    vector<int> V;
-    int rows, cols, *matrix = NULL;
-
-    load_vector(V, "vector.txt", vLen);
-    matrix = load_matrix( "matrix.txt", rows, cols );
-
-    if( vLen != rows )
-    {
-        throw "Unmaching sizes";
-    }
-
-    if( matrix == NULL || V.empty() )
-    {
-        throw "Unable to read matrix.";
-    }
-
-    int localResult[cols];
-    memset( localResult, 0, cols*sizeof(int) );
-
-
-    for(int i = 0; i < rows*cols; i++)
-    {
-        int vecIdx = (i / cols) % vLen;
-        int idx  = i % cols;
-
-        localResult[idx] += matrix[i] * V[vecIdx];
-    }
-
-    free(matrix);
 }
 
 void mpi_matrix_multiply( char* processors )
@@ -133,7 +108,8 @@ void mpi_matrix_multiply( char* processors )
     int vLen;
     vector<int> V;
 
-    int rows, cols, *matrix = NULL;
+    int rows, cols, *Mat = NULL;
+    vector<int> matrix;
 
     // Initialize the MPI environment
     MPI_Init(NULL, NULL);
@@ -143,31 +119,24 @@ void mpi_matrix_multiply( char* processors )
     MPI_Comm_rank(MPI_COMM_WORLD, &world_rank);
     MPI_Comm_size(MPI_COMM_WORLD, &world_size);
 
-    // We are assuming at least 2 processes for this task
-    if( world_size < 1 )
-    {
-        fprintf(stderr, "World size must be greater than 1 for %s\n", processors);
-        MPI_Abort(MPI_COMM_WORLD, 1);
-    }
-
     if( world_rank == 0 )
     {
         // Root process reads in the necessary files
-        load_vector(V, "vector.txt", vLen);
-        matrix = load_matrix( "matrix.txt", rows, cols );
+        load_vector( V, "vector.txt", vLen );
+        load_matrix( matrix,  "matrix.txt", rows, cols );
+        Mat=&matrix[0];
 
         if( vLen != rows )
         {
             throw "Unmaching sizes";
         }
 
-        if( matrix == NULL || V.empty() )
+        if( matrix.empty() || V.empty() )
         {
             throw "Unable to read matrix.";
         }
     }
 
-    // MPI WORK
     // Broadcast matrix size and multiplicator vector to matrix
     MPI_Bcast(&rows, 1, MPI_INT, 0, MPI_COMM_WORLD);
     MPI_Bcast(&cols, 1, MPI_INT, 0, MPI_COMM_WORLD);
@@ -210,7 +179,7 @@ void mpi_matrix_multiply( char* processors )
         }
 
         // Scatter each process their chunks
-        MPI_Scatterv(matrix, chunkSize, chunkOfst, MPI_INT, rxChunks, rxSize, MPI_INT, 0, MPI_COMM_WORLD);
+        MPI_Scatterv(Mat, chunkSize, chunkOfst, MPI_INT, rxChunks, rxSize, MPI_INT, 0, MPI_COMM_WORLD);
         MPI_Barrier(MPI_COMM_WORLD);
 
         // Communicate where each node should get their value from the vector
@@ -220,7 +189,7 @@ void mpi_matrix_multiply( char* processors )
     else
     {
         // Scatter each process their chunks
-        MPI_Scatterv(matrix, NULL, NULL, MPI_INT, rxChunks, rxSize, MPI_INT, 0, MPI_COMM_WORLD);
+        MPI_Scatterv(Mat, NULL, NULL, MPI_INT, rxChunks, rxSize, MPI_INT, 0, MPI_COMM_WORLD);
         MPI_Barrier(MPI_COMM_WORLD);
 
         // Communicate where each node should get their value from the vector
@@ -289,9 +258,6 @@ void mpi_matrix_multiply( char* processors )
         for(int i = 0; i < cols; i++) result << localResult[i] << " ";
         result << endl;
         result.close();
-
-        // Clean up
-        free(matrix);
     }
 
     MPI_Finalize();
@@ -299,7 +265,6 @@ void mpi_matrix_multiply( char* processors )
 
 int main( int argc, char **argv )
 {
-  //    sequential_mattrix_multiply(argv[0]);
     mpi_matrix_multiply(argv[0]);
 	return 0;
 }

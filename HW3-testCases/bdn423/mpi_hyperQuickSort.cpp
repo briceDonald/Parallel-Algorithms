@@ -3,6 +3,7 @@
 #include <fstream>
 #include <vector>
 #include "stdlib.h"
+#include <string.h>
 #include <math.h>
 #include <mpi.h>
 
@@ -10,24 +11,25 @@
 
 using namespace std;
 
-void load_data( vector<int> &data, const char *filename, int &len )
+void load_vector( vector<int> &data, const char *filename, int &len )
 {
-    len = 0;
-    ifstream datafile;
-
+    cout << "Opening file : " << filename << endl;
     try
     {
-        cout << "Opening file : " << filename << endl;
-		datafile.open( filename );
-
         char c;
         string num;
-		while( datafile.good() )
+        len = 0;
+        ifstream datafile;
+
+		datafile.open( filename );
+
+        while( datafile.good() )
 		{
             c  = datafile.get();
-            if( c == ' ' || c == '\r' || c == '\n' )
+
+            if( c == ' ' || c == '\t' || c == '\r' || c == '\n' )
             {
-                if(num.size() )
+                if( num.size() )
                 {
                     data.push_back( atoi( num.c_str() ) );
                     len++;
@@ -45,9 +47,9 @@ void load_data( vector<int> &data, const char *filename, int &len )
 	catch(...)
 	{
 		cout << "Error opening file: " << filename << endl;
+        throw string( "Error opening input file.");
 	}
 }
-
 
 void sequential_quickSort( int *A, int start, int end )
 {
@@ -82,7 +84,6 @@ void sequential_quickSort( int *A, int start, int end )
         sequential_quickSort(A, i, end);
 }
 
-
 void mpi_hypersort( void )
 {
     int len;
@@ -104,7 +105,7 @@ void mpi_hypersort( void )
     if( world_rank == ROOT )
     {
         // Root node reads in the necessary files
-        load_data(data, "input.txt", len);
+        load_vector(data, "input.txt", len);
 
         int minSize = len / world_size;
         int remElts = len % world_size;
@@ -138,7 +139,8 @@ void mpi_hypersort( void )
 
     // Scatter each node their chunks using scatterv: Node 0 is root
     vector<int> partition(size);
-    MPI_Scatterv( &data[0], partitionsSize, partitionsOfst, MPI_INT, &partition[0], size, MPI_INT, ROOT, MPI_COMM_WORLD);
+    MPI_Scatterv( &data[0], partitionsSize, partitionsOfst, MPI_INT, \
+                  &partition[0], size, MPI_INT, ROOT, MPI_COMM_WORLD);
     MPI_Barrier( MPI_COMM_WORLD);
 
     if( world_rank == ROOT )
@@ -211,6 +213,7 @@ void mpi_hypersort( void )
         }
 
         // Get partner and swap: first half [0, k-1], second half [k, size]
+        int rxCount;
         int partner = -1;
         MPI_Status rxStatus;
         int partnerRxBuffer[MAX_RX_SIZE];
@@ -228,7 +231,6 @@ void mpi_hypersort( void )
                 MPI_Send(&partition[k], size - k, MPI_INT, partner, 0, SUB_COMM);
 
                 // clear space in the partition and add the new data
-                int rxCount;
                 MPI_Get_count(&rxStatus, MPI_INT, &rxCount);
                 partition.erase( partition.begin() + k, partition.end() );
                 partition.insert( partition.begin(), partnerRxBuffer, partnerRxBuffer + rxCount);
@@ -247,9 +249,30 @@ void mpi_hypersort( void )
                 MPI_Recv(partnerRxBuffer, MAX_RX_SIZE, MPI_INT, partner, 0, SUB_COMM, &rxStatus);
 
                 // clear space in the partition and add the new data
-                int rxCount;
                 MPI_Get_count(&rxStatus, MPI_INT, &rxCount);
                 partition.erase( partition.begin(), partition.begin() + k );
+                partition.insert( partition.begin(), partnerRxBuffer, partnerRxBuffer + rxCount);
+            }
+        }
+
+        if( subSize % 2 && subSize > 1)
+        {
+            // This node is ranked right in the middle of odd number of nodes
+            size = partition.size();
+            MPI_Barrier( SUB_COMM );
+
+            int middleNode = half - 1;
+            if( subRank == middleNode )
+            {
+                // Send high list to my right and the low list to my left, but receive nothing
+                MPI_Send(&partition[k], size - k, MPI_INT, middleNode + 1, ROOT, SUB_COMM);
+                MPI_Send(&partition[0], k, MPI_INT, middleNode - 1, ROOT, SUB_COMM);
+                partition.clear();
+            }
+            else if( subRank == middleNode - 1 || subRank == middleNode + 1 )
+            {
+                MPI_Recv(partnerRxBuffer, MAX_RX_SIZE, MPI_INT, middleNode, 0, SUB_COMM, &rxStatus);
+                MPI_Get_count(&rxStatus, MPI_INT, &rxCount);
                 partition.insert( partition.begin(), partnerRxBuffer, partnerRxBuffer + rxCount);
             }
         }
@@ -258,45 +281,11 @@ void mpi_hypersort( void )
         sequential_quickSort( &partition[0], 0, size-1 );
 
         MPI_Barrier( SUB_COMM );
-        cout << world_rank << " => " << subRank << " " << median << endl;
 
         // Split the subworld
         int color = subRank / half;
         MPI_Comm_split(SUB_COMM, color, subRank, &SUB_COMM);
-
-        if( world_rank == ROOT )
-        {
-            cout << "......................................................... " << endl;
-            // split the context
-        }
     }
-
-    {
-        char t[30];
-        sprintf(t, "Rank: %d Size: %d\n", world_rank, size);
-        string str(t);
-
-        for(int i = 0; i < size; i++)
-        {
-            sprintf(t, "%d\t", partition[i]);
-            str += string(t);
-        }
-
-        MPI_Barrier( MPI_COMM_WORLD);
-        if(size)
-            cout << str << endl;
-        MPI_Barrier( MPI_COMM_WORLD);
-    }
-
-    // // Get the median
-    // if( world_rank == ROOT )
-    // {
-    //     int median = partition[( (size+1)/2 - 1 )];
-
-    //     // Broadcast the median
-    //     cout << median << endl;
-    //     cout << str << endl;
-    // }
 
     // Each process to tell how many elements the root gathers from it.
     int *rxSizes, *rxOfsts;
@@ -325,13 +314,15 @@ void mpi_hypersort( void )
 
     if( world_rank == ROOT )
     {
-
         // Write the result
         ofstream result;
 
-        result.open("result.txt", ios_base::out);
+        result.open("output.txt", ios_base::out);
         for(int i = 0; i < len; i++)
-            result << data[i] << " ";
+        {
+            result << data[i] << "\n";
+        }
+
         result << endl;
         result.close();
 
@@ -344,13 +335,6 @@ void mpi_hypersort( void )
 
 int main( int argc, char **argv )
 {
-    // vector<int> vec;
-    // int len;
-    // load_data(vec, "input.txt", len);
-    // sequential_quickSort(&vec[0], 0, len-1);
-    // for(int i = 0; i < len; i++)
-    //     cout << "-> " << vec[i] << endl;
-
     mpi_hypersort();
-    return 0;
+	return 0;
 }
