@@ -141,6 +141,12 @@ void mpi_hypersort( void )
     MPI_Scatterv( &data[0], partitionsSize, partitionsOfst, MPI_INT, &partition[0], size, MPI_INT, ROOT, MPI_COMM_WORLD);
     MPI_Barrier( MPI_COMM_WORLD);
 
+    if( world_rank == ROOT )
+    {
+        free(partitionsSize);
+        free(partitionsOfst);
+    }
+
     // Now do seqential sort
     sequential_quickSort( &partition[0], 0, size-1 );
 
@@ -155,27 +161,58 @@ void mpi_hypersort( void )
         MPI_Comm_rank(SUB_COMM, &subRank);
         MPI_Comm_size(SUB_COMM, &subSize);
 
-        // Compute the median
-        int median;
+        int half = (subSize + 1) / 2;
+
+        // Compute the median and determine wich median to broadcast
+        int median = (1<<31), *medians;
+        char valid = 0, *validMedian;
+
+        if( !partition.empty() )
+        {
+            valid = 1;
+            median = partition[(size + 1)/2 - 1];
+        }
+
         if( subRank == ROOT )
         {
-            median = partition[( (size + 1)/2 - 1 )];
+            validMedian = (char*) malloc( sizeof(char) * subSize );
+            medians     = (int*)  malloc( sizeof(int)  * subSize );
+        }
+
+        // Each node to communicate their medians, and if the median is valid to the root
+        MPI_Gather( &valid,  1, MPI_CHAR, validMedian, 1, MPI_CHAR, ROOT, SUB_COMM );
+        MPI_Gather( &median, 1, MPI_INT,  medians,     1, MPI_INT,  ROOT, SUB_COMM );
+
+        if( subRank == ROOT )
+        {
+            // Let the root search to find the first valid median, the broadcast it
+            for( int i = 0; i < subSize; i++ )
+            {
+                if( validMedian[i] )
+                {
+                    median = medians[i];
+                    break;
+                }
+            }
+
+            free(medians);
+            free(validMedian);
         }
 
         // Broadcast the median to all nodes within the comm
         MPI_Bcast(&median, 1, MPI_INT, ROOT, SUB_COMM);
-        MPI_Barrier(SUB_COMM);
 
         // Each node to separate their partition into two
         // k, items greather than or equal to median
         int k = 0;
-        while( k < size && partition[k] <= median ) k++;
+        while( k < size && partition[k] <= median )
+        {
+            k++;
+        }
 
-        // first half [0, k-1], second half [k, size]
-        // Get partner and swap
+        // Get partner and swap: first half [0, k-1], second half [k, size]
         int partner = -1;
         MPI_Status rxStatus;
-        int half = (subSize + 1) / 2;
         int partnerRxBuffer[MAX_RX_SIZE];
 
         if(subRank < half )
@@ -186,16 +223,13 @@ void mpi_hypersort( void )
             // Check if the destination is valid
             if( partner < subSize )
             {
-                // Receive low list from partner
+                // Receive low list from partner, then send high list
                 MPI_Recv(partnerRxBuffer, MAX_RX_SIZE, MPI_INT, partner, 0, SUB_COMM, &rxStatus);
-
-                // Send high list to partner
                 MPI_Send(&partition[k], size - k, MPI_INT, partner, 0, SUB_COMM);
 
                 // clear space in the partition and add the new data
                 int rxCount;
                 MPI_Get_count(&rxStatus, MPI_INT, &rxCount);
-                //                cout << "Low rxCount: " << rxCount << " k " << k << endl;
                 partition.erase( partition.begin() + k, partition.end() );
                 partition.insert( partition.begin(), partnerRxBuffer, partnerRxBuffer + rxCount);
             }
@@ -208,37 +242,31 @@ void mpi_hypersort( void )
             // Check if the destination is valid
             if( partner < half )
             {
-                // Send low list to partner
+                // Send low list to partner then receive high list from partner
                 MPI_Send(&partition[0], k, MPI_INT, partner, 0, SUB_COMM);
-
-                // Receive high list from partner
                 MPI_Recv(partnerRxBuffer, MAX_RX_SIZE, MPI_INT, partner, 0, SUB_COMM, &rxStatus);
 
                 // clear space in the partition and add the new data
                 int rxCount;
                 MPI_Get_count(&rxStatus, MPI_INT, &rxCount);
-                //                cout << "Hgh rxCount: " << rxCount << " k " << k << endl;
                 partition.erase( partition.begin(), partition.begin() + k );
                 partition.insert( partition.begin(), partnerRxBuffer, partnerRxBuffer + rxCount);
             }
         }
 
         size = partition.size();
-        cout << "WLD: " << world_rank << " sub " << subRank << " => " << partner << " size " << size << endl;
-
-        //        cout << subRank << " B median: " << median << " half " << half << endl;
-        MPI_Barrier( MPI_COMM_WORLD );
-
         sequential_quickSort( &partition[0], 0, size-1 );
 
+        MPI_Barrier( SUB_COMM );
+        cout << world_rank << " => " << subRank << " " << median << endl;
 
-        // divide the subworld by 2
-        int color = subRank / 2;//half;
+        // Split the subworld
+        int color = subRank / half;
         MPI_Comm_split(SUB_COMM, color, subRank, &SUB_COMM);
 
-        if( subRank == ROOT )
+        if( world_rank == ROOT )
         {
-          cout << "........................................................." << endl;
+            cout << "......................................................... " << endl;
             // split the context
         }
     }
@@ -257,6 +285,7 @@ void mpi_hypersort( void )
         MPI_Barrier( MPI_COMM_WORLD);
         if(size)
             cout << str << endl;
+        MPI_Barrier( MPI_COMM_WORLD);
     }
 
     // // Get the median
@@ -269,20 +298,45 @@ void mpi_hypersort( void )
     //     cout << str << endl;
     // }
 
+    // Each process to tell how many elements the root gathers from it.
+    int *rxSizes, *rxOfsts;
 
-    if( world_rank == 0 )
+    if( world_rank == ROOT )
     {
+        rxSizes = (int*)  malloc( sizeof(int)  * world_size );
+        rxOfsts = (int*)  malloc( sizeof(int)  * world_size );
+    }
+
+    // Each node to communicate their partition size to the root
+    MPI_Gather( &size, 1, MPI_INT, rxSizes, 1, MPI_INT, ROOT, MPI_COMM_WORLD );
+
+    if( world_rank == ROOT )
+    {
+        // compute the offset array
+        int offset = 0;
+        for( int i = 0; i < world_size; i++ )
+        {
+            rxOfsts[i] = offset;
+            offset += rxSizes[i];
+        }
+    }
+
+    MPI_Gatherv( &partition[0], size, MPI_INT, &data[0], rxSizes, rxOfsts, MPI_INT, ROOT, MPI_COMM_WORLD );
+
+    if( world_rank == ROOT )
+    {
+
         // Write the result
-        // ofstream result;
+        ofstream result;
 
-        // result.open("result.txt", ios_base::out);
-        //        for(int i = 0; i < cols; i++) result << localResult[i] << " ";
-        // result << endl;
-        // result.close();
+        result.open("result.txt", ios_base::out);
+        for(int i = 0; i < len; i++)
+            result << data[i] << " ";
+        result << endl;
+        result.close();
 
-        // Clean up
-        free(partitionsOfst);
-        free(partitionsSize);
+        free(rxSizes);
+        free(rxOfsts);
     }
 
     MPI_Finalize();
