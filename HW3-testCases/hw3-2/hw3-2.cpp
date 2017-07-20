@@ -46,8 +46,6 @@ void load_data( vector<int> &data, const char *filename, int &len )
 	{
 		cout << "Error opening file: " << filename << endl;
 	}
-
-    return;
 }
 
 
@@ -168,15 +166,14 @@ void mpi_hypersort( void )
         MPI_Bcast(&median, 1, MPI_INT, ROOT, SUB_COMM);
         MPI_Barrier(SUB_COMM);
 
-
         // Each node to separate their partition into two
         // k, items greather than or equal to median
         int k = 0;
-        while( size && partition[k] <= median ) k++;
+        while( k < size && partition[k] <= median ) k++;
 
         // first half [0, k-1], second half [k, size]
         // Get partner and swap
-        int partner;
+        int partner = -1;
         MPI_Status rxStatus;
         int half = (subSize + 1) / 2;
         int partnerRxBuffer[MAX_RX_SIZE];
@@ -201,7 +198,6 @@ void mpi_hypersort( void )
                 //                cout << "Low rxCount: " << rxCount << " k " << k << endl;
                 partition.erase( partition.begin() + k, partition.end() );
                 partition.insert( partition.begin(), partnerRxBuffer, partnerRxBuffer + rxCount);
-                cout << subRank <<  " Low rxCount: " << rxCount << " sz " << size << " k " << k << endl;
             }
         }
         else
@@ -209,7 +205,6 @@ void mpi_hypersort( void )
             // High ranks
             partner = subRank - half;
 
-            //        cout << subRank << "B median: " << median << endl;
             // Check if the destination is valid
             if( partner < half )
             {
@@ -222,27 +217,28 @@ void mpi_hypersort( void )
                 // clear space in the partition and add the new data
                 int rxCount;
                 MPI_Get_count(&rxStatus, MPI_INT, &rxCount);
-                cout << subRank <<  " Hgh rxCount: " << rxCount << " sz " << size << " k " << k << endl;
-                partition.erase( partition.begin(), partition.begin() + rxCount );
-                cout << subRank <<  " Hgh rxCount: " << rxCount << " sz " << size << " k " << k << endl;
-                // partition.insert( partition.begin(), partnerRxBuffer, partnerRxBuffer + rxCount);
+                //                cout << "Hgh rxCount: " << rxCount << " k " << k << endl;
+                partition.erase( partition.begin(), partition.begin() + k );
+                partition.insert( partition.begin(), partnerRxBuffer, partnerRxBuffer + rxCount);
             }
         }
 
-
-        MPI_Barrier( SUB_COMM );
-        //        cout << subRank << " B median: " << median << " half " << half << endl;
-        break;
         size = partition.size();
+        cout << "WLD: " << world_rank << " sub " << subRank << " => " << partner << " size " << size << endl;
+
+        //        cout << subRank << " B median: " << median << " half " << half << endl;
+        MPI_Barrier( MPI_COMM_WORLD );
+
         sequential_quickSort( &partition[0], 0, size-1 );
 
 
-        // // divide the subworld by 2
-        // int color = subRank / half;
-        // MPI_Comm_split(MPI_COMM_WORLD, color, subRank, &SUB_COMM);
+        // divide the subworld by 2
+        int color = subRank / 2;//half;
+        MPI_Comm_split(SUB_COMM, color, subRank, &SUB_COMM);
 
         if( subRank == ROOT )
         {
+          cout << "........................................................." << endl;
             // split the context
         }
     }
@@ -259,7 +255,8 @@ void mpi_hypersort( void )
         }
 
         MPI_Barrier( MPI_COMM_WORLD);
-        cout << str << endl;
+        if(size)
+            cout << str << endl;
     }
 
     // // Get the median
