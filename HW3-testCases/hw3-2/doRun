@@ -1,0 +1,13 @@
+#!/bin/bash
+
+procs=$1
+
+clear; clear;
+mpic++ --std=c++98 hw3-2.cpp
+
+if [ $? = 0 ]
+then
+#	clear;
+#	clear;
+	mpiexec -n $procs ./a.out
+fi
