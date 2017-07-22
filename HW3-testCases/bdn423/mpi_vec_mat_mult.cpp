@@ -255,7 +255,10 @@ void mpi_matrix_multiply( char* processors )
         ofstream result;
 
         result.open("result.txt", ios_base::out);
-        for(int i = 0; i < cols; i++) result << localResult[i] << " ";
+        for(int i = 0; i < cols; i++)
+        {
+            result << localResult[i] << "\n";
+        }
         result << endl;
         result.close();
     }
