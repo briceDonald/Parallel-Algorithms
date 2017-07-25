@@ -9,4 +9,4 @@
 #SBATCH --mail-type=begin           # email me when the job starts
 #SBATCH --mail-type=end             # email me when the job finishes
 
-ibrun  ./seq_quicksort_and_vec_mat_mult ./mpi_hyperQuickSort ./mpi_vec_mat_mult
+ibrun  ./seq_quicksort_and_vec_mat_mult 
