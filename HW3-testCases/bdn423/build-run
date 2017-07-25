@@ -1,0 +1,13 @@
+#!/bin/bash
+
+echo $1 $2
+
+cp input_$1.txt  input.txt
+cp matrix_$1.txt matrix.txt
+cp vector_$1.txt vector.txt
+
+mpic++ -cxx=/usr/bin/g++ -o mpi_hyperQuickSort mpi_hyperQuickSort.cpp
+mpic++ -cxx=/usr/bin/g++ -o mpi_vec_mat_mult mpi_vec_mat_mult.cpp
+mpic++ -cxx=/usr/bin/g++ -o seq_quicksort_and_vec_mat_mult seq_quicksort_and_vec_mat_mult.cpp
+
+./mpi_vec_mat_mult -n $2

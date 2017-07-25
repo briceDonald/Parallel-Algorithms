@@ -1,0 +1,30 @@
+#!/bin/bash
+
+email=$1
+binName='hw2-1'
+filename='hw2-1.cu'
+batchname="hw2-1-sbatch"
+
+clear; clear; rm $binName $batchname
+module load cuda
+nvcc -arch=compute_35 -code=sm_35  -o $binName $filename
+
+if [ $? == 0 ]
+then
+    echo "#!/bin/bash
+#SBATCH -J $filename
+#SBATCH -o result-$filename
+#SBATCH -n 1
+#SBATCH -p gpudev
+#SBATCH -t 00:00:20
+#SBATCH -A Parallel-Algorithms
+#SBATCH --mail-user=$email
+#SBATCH --mail-type=begin
+#SBATCH --mail-type=end
+
+./$binName
+"  > $batchname
+
+    sbatch $batchname
+fi
+
